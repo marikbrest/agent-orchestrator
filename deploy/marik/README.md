@@ -66,3 +66,15 @@ Build an upgrade from a reviewed commit with a new immutable image tag. Test aga
 2. הריצו `docker compose -f deploy/marik/docker-compose.yml build` לבניית התמונה.
 3. הריצו `deploy/marik/smoke.sh` לבדיקת שלושת המופעים והפרדת הנתונים ביניהם.
 4. סביבת הבדיקה פועלת ללא רשת וללא חשבונות ספק. חיבור חשבונות ואייפון דורש סביבת ניסוי פרטית ואישור מבעלי החשבונות.
+
+## Offline Codex A preflight
+
+Build the base first on the Mac, then build the overlay. It installs a pinned and checksum-verified Codex 0.166.0 distribution and inherits the offline settings and private volumes.
+
+```sh
+docker compose -f deploy/marik/docker-compose.yml build codex-a
+docker compose -p marik-codex-pilot -f deploy/marik/docker-compose.yml -f deploy/marik/codex-pilot.yml build codex-a
+docker compose -p marik-codex-pilot -f deploy/marik/docker-compose.yml -f deploy/marik/codex-pilot.yml run --rm --entrypoint codex codex-a --version
+```
+
+On Docker Desktop for Mac, the app-server initialized and returned an empty account in a disposable offline home. The command sandbox preflight (`codex sandbox linux /usr/bin/true`) failed because bubblewrap could not create a user namespace under the container policy. Resolve this with a compatible, isolated Linux environment on the Mac and verify command execution and its isolation before enabling egress. Keep device authentication interactive and local to the worker after the runtime and egress checks pass.

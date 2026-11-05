@@ -1,0 +1,5 @@
+services:
+  codex-a:
+    image: marik-ao-codex:local
+    build:
+      dockerfile: ../deploy/marik/Dockerfile.codex
