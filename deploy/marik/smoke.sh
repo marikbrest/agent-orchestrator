@@ -22,7 +22,7 @@ done
 # Stop one host. The other two should keep responding.
 "${compose[@]}" stop codex-b
 for worker in codex-a claude; do
-  "${compose[@]}" exec -T "$worker" curl -fsS -o /dev/null http://127.0.0.1:3001/readyz
+  "${compose[@]}" exec -T "$worker" ao status --json | grep -E '"state":[[:space:]]*"ready"' >/dev/null
 done
 "${compose[@]}" up -d --wait --wait-timeout 150 codex-b
 

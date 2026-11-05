@@ -23,7 +23,7 @@ x-worker: &worker
     AO_TELEMETRY_REMOTE: "off"
     AO_HARNESS_UPDATE_CHECKS: "off"
   healthcheck:
-    test: [CMD, curl, --fail, --silent, --max-time, "3", "http://127.0.0.1:3001/readyz"]
+    test: ["CMD-SHELL", "ao status --json | grep -Eq '\"state\":[[:space:]]*\"ready\"'"]
     interval: 5s
     timeout: 4s
     retries: 12
