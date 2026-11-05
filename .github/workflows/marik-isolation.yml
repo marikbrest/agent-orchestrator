@@ -1,0 +1,30 @@
+name: Marik isolation lab
+on:
+  pull_request:
+    paths: ['backend/**', 'deploy/marik/**', '.github/workflows/marik-isolation.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: bash -n deploy/marik/smoke.sh
+      - run: docker compose -f deploy/marik/docker-compose.yml --profile fleet config --quiet
+      - run: docker compose -f deploy/marik/docker-compose.yml build
+      - run: deploy/marik/smoke.sh
+      - name: Scan dependency manifests
+        if: always()
+        run: |
+          docker run --rm -v "$PWD:/source:ro" aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb \
+            fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 /source
+      - name: Scan runtime image
+        if: always()
+        run: |
+          docker save marik-ao:local -o "$RUNNER_TEMP/marik-ao.tar"
+          docker run --rm -v "$RUNNER_TEMP/marik-ao.tar:/image.tar:ro" aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb \
+            image --input /image.tar --scanners vuln --severity HIGH,CRITICAL --exit-code 1
