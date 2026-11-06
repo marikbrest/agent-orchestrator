@@ -13,11 +13,30 @@ for worker in codex-a codex-b claude; do
     test "$(id -u)" = 10001
     test -w "$HOME" && test -w "$CODEX_HOME" && test -w /workspace
     if touch /usr/local/bin/root-write 2>/dev/null; then exit 1; fi
+    umask 077
+    printf "synthetic-%s\n" "$1" > "$CODEX_HOME/credential-$1"
     printf "%s\n" "$1" > "$CODEX_HOME/isolation-sentinel"
     git init -q -b "$1" /workspace/repo
     git -C /workspace/repo -c user.name=Lab -c user.email=lab@example.invalid commit -q --allow-empty -m baseline
   ' sh "$worker"
 done
+
+# Seed all canaries before probing from any worker so a missing peer file is meaningful.
+for worker in codex-a codex-b claude; do
+  "${compose[@]}" exec -T "$worker" sh -eu -c '
+    test "$(cat "$CODEX_HOME/credential-$1")" = "synthetic-$1"
+    for peer in codex-a codex-b claude; do
+      [ "$peer" != "$1" ] || continue
+      if cat "$CODEX_HOME/credential-$peer" >/dev/null 2>&1; then
+        printf "Worker %s could read the canary for %s\n" "$1" "$peer" >&2
+        exit 1
+      fi
+    done
+    test ! -S /var/run/docker.sock
+    test -z "${OPENAI_API_KEY:-}${ANTHROPIC_API_KEY:-}${GH_TOKEN:-}${GITHUB_TOKEN:-}"
+  ' sh "$worker"
+done
+printf '%s\n' 'Each worker read its own synthetic credential; peer credentials were inaccessible.'
 
 # Stop one host. The other two should keep responding.
 "${compose[@]}" stop codex-b
