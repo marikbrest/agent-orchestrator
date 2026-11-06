@@ -33,3 +33,37 @@ for worker in codex-a codex-b claude; do
   ' sh "$worker"
 done
 printf '%s\n' 'Three daemons healthy; separate homes and Git repositories survived peer shutdown/restart.'
+
+# Rehearse a publisher checking an agent branch against an advanced main.
+"${compose[@]}" exec -T codex-a sh -eu -c '
+  cd /workspace/repo
+  git config user.name Lab
+  git config user.email lab@example.invalid
+
+  git switch -qc main
+  printf "%s\n" baseline > shared.txt
+  git add shared.txt
+  git commit -qm "Add shared fixture"
+
+  git worktree add -qb task /workspace/task main
+  printf "%s\n" worker > /workspace/task/shared.txt
+  git -C /workspace/task commit -qam "Change shared fixture in task"
+  task_head=$(git -C /workspace/task rev-parse HEAD)
+
+  printf "%s\n" publisher > shared.txt
+  git commit -qam "Advance main independently"
+  main_head=$(git rev-parse main)
+  git worktree add -q --detach /workspace/review main
+
+  if git -C /workspace/review merge --no-edit task; then
+    echo "Expected a merge conflict" >&2
+    exit 1
+  fi
+  test "$(git -C /workspace/review diff --name-only --diff-filter=U)" = shared.txt
+  git -C /workspace/review merge --abort
+  test -z "$(git -C /workspace/review status --porcelain)"
+  test "$(git -C /workspace/review rev-parse HEAD)" = "$main_head"
+  test "$(git rev-parse main)" = "$main_head"
+  test "$(git rev-parse task)" = "$task_head"
+'
+printf '%s\n' 'Git conflict detected and aborted in a detached review worktree; main and task refs preserved.'
