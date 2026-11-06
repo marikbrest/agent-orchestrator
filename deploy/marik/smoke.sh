@@ -67,3 +67,38 @@ printf '%s\n' 'Three daemons healthy; separate homes and Git repositories surviv
   test "$(git rev-parse task)" = "$task_head"
 '
 printf '%s\n' 'Git conflict detected and aborted in a detached review worktree; main and task refs preserved.'
+
+# Exercise the publishing contract with a disposable, local Git remote.
+"${compose[@]}" exec -T codex-a sh -eu -c '
+  cd /workspace/repo
+  remote=/workspace/publisher.git
+  git init -q --bare -b main "$remote"
+  git push -q "$remote" main
+  main_head=$(git --git-dir="$remote" rev-parse main)
+
+  cat > "$remote/hooks/pre-receive" << "HOOK"
+#!/bin/sh
+while read -r old new ref; do
+  if [ "$ref" = refs/heads/main ]; then
+    echo "Protected branch: main" >&2
+    exit 1
+  fi
+done
+HOOK
+  chmod +x "$remote/hooks/pre-receive"
+
+  # Use a fast-forward candidate so Git reaches the remote protection hook.
+  git branch direct-main-attempt main
+  git worktree add -q /workspace/direct-main-attempt direct-main-attempt
+  git -C /workspace/direct-main-attempt commit -qm "Simulate direct update" --allow-empty
+  if result=$(git push "$remote" direct-main-attempt:refs/heads/main 2>&1); then
+    echo "Direct push to main unexpectedly succeeded" >&2
+    exit 1
+  fi
+  printf "%s\n" "$result" | grep -F "Protected branch: main" >/dev/null
+
+  git push -q "$remote" task:refs/heads/task
+  test "$(git --git-dir="$remote" rev-parse main)" = "$main_head"
+  test "$(git --git-dir="$remote" rev-parse task)" = "$(git rev-parse task)"
+'
+printf '%s\n' 'Local publisher rejected a direct main push and accepted the task branch.'
