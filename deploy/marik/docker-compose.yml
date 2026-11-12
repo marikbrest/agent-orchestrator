@@ -1,5 +1,5 @@
 x-worker: &worker
-  image: marik-ao:local
+  image: ${MARIK_AO_IMAGE:-marik-ao:local}
   build:
     context: ../../backend
     dockerfile: ../deploy/marik/Dockerfile
