@@ -176,7 +176,8 @@ import {
 import { AutomationMessage, SteeredBrowserFeedback, steeredBrowserFeedback } from "./AutomationMessage";
 import { HumanMessageEditor } from "./HumanMessageEditor";
 import { ChatLinkProvider, ChatOpeningRef } from "./ChatMarkdown";
-import { ChatEntrance, createChatEntranceGate } from "./chat-entrance";
+import { admitArrivals, ChatEntrance, createChatEntranceGate } from "./chat-entrance";
+import { pageHidden } from "../../lib/page-hidden";
 import { ChatImageSourceProvider } from "./chat-image-source";
 import type { AgentSwitchProps } from "./AgentSwitchPicker";
 import type { ComposerPromptSuggestion } from "./ComposerEditor";
@@ -209,6 +210,7 @@ import {
 	isUserQueuePrompt,
 	needsReauth,
 	queuedTurnIds,
+	type BatchedDelivery,
 	type ConversationPlan,
 	type ConversationSnapshot,
 	type ControllerState,
@@ -1040,6 +1042,18 @@ function ChatWorkspaceContent({
 	// session temporarily becomes terminated and later returns.
 	const reviewerActive = reviewerChatSelected || Boolean(reviewerTarget && session);
 	const shellActive = Boolean(shellTarget && session);
+	// When the conversation panel was last shown again after a terminal or reviewer
+	// tab covered it. The transcript is held while covered (HoldWhileHidden), so rows
+	// written meanwhile reach it only on return, and must not read as arrivals the
+	// reader watched. Adjusted during render, so the held transcript sees it in the
+	// same render that catches it up; only a tab change pays for the extra pass.
+	const panelCovered = reviewerActive || shellActive;
+	const [panelWasCovered, setPanelWasCovered] = useState(panelCovered);
+	const [panelShownAt, setPanelShownAt] = useState<number>();
+	if (panelCovered !== panelWasCovered) {
+		setPanelWasCovered(panelCovered);
+		if (!panelCovered) setPanelShownAt(Date.now());
+	}
 	const splitHiddenTabKeys = useSplitHiddenTabKeys();
 	const closeFocusedSplitPane = useSplitCloseFocused();
 	const auxiliaryTabs = useMemo<ChatAuxiliaryTab[]>(
@@ -2107,6 +2121,7 @@ function ChatWorkspaceContent({
 							<ChatTokenSkills.Provider value={skills ?? NO_SKILLS}>
 
 								<Timeline
+									shownAt={panelShownAt}
 							onAddToSideChat={onAddToSideChat}
 									checkingSideChatAvailability={checkingSideChatAvailability}
 									workerUpdates={sessionRole === "orchestrator"}
@@ -2976,9 +2991,12 @@ export function Timeline({
 	openingStartedAt,
 	openingStartupLabel,
 	controllerStopped = false,
+	shownAt,
 }: {
 	/** The agent controller is really gone; a turn still marked running settles with an unknown outcome. */
 	controllerStopped?: boolean;
+	/** When the panel holding this transcript was last shown again after being covered (epoch ms). */
+	shownAt?: number;
 	onAddToSideChat?: ChatWorkspaceProps["onAddToSideChat"];
 	checkingSideChatAvailability?: boolean;
 	/** Replaces the default "Add to chat" (write to this draft scope's composer). */
@@ -3043,10 +3061,13 @@ export function Timeline({
 	// Rows above the newest sequence this chat opened with arrived while it was on
 	// screen; only they play an entrance (chat-entrance.ts). Taken from the first
 	// render with a transcript, so a placeholder or loading frame does not count.
+	// Rows the reader did not watch arrive (written while they were away, or landing
+	// while the window is hidden) raise the floor before they mount, and the view
+	// lands on them without a glide (the gate's catchUpAt).
 	const [entranceGate] = useState(createChatEntranceGate);
-	if (entranceGate.floor === undefined && sourceSnapshot.items.length > 0) {
-		entranceGate.floor = sourceSnapshot.items.reduce((floor, item) => Math.max(floor, item.sequence), sourceSnapshot.latestSequence);
-	}
+	// Shown again after a terminal or reviewer tab covered it: the reader watches from then.
+	if (shownAt !== undefined && shownAt > entranceGate.watchingSince) entranceGate.watchingSince = shownAt;
+	admitArrivals(entranceGate, sourceSnapshot);
 	useEffect(() => {
 		entranceGate.settled = true;
 	}, [entranceGate]);
@@ -3089,6 +3110,7 @@ export function Timeline({
 		markWritten,
 		isOwnScroll,
 		isFlying,
+		isGliding,
 		reaim,
 		endFlight,
 	} = useScrollFollow(getScroller);
@@ -3969,6 +3991,13 @@ export function Timeline({
 					(item) =>
 						!seenHumanMessageIds.current?.has(itemKey(item)) &&
 						item.sequence > (lastSeenLatestSequence.current ?? -Infinity) &&
+						// A prompt the reader did not watch arrive (sent from another device
+						// while they were away, or while the window was hidden) is history.
+						item.sequence > (entranceGate.floor ?? -Infinity) &&
+						// A local echo can appear while hidden with no new snapshot to raise
+						// the floor (a send that resolved after the reader left); it is seen
+						// here, so it never enters on their return.
+						!pageHidden() &&
 						// The brief that started the chat made its entrance on the new chat page.
 						!(openingTurnId && item.turnId === openingTurnId),
 				)
@@ -4001,7 +4030,8 @@ export function Timeline({
 		if (openingPending && firstTurn) hiddenTurns.delete(firstTurn.id);
 		// An AO action outlives a rolled-back or hidden turn, so it stands on its own there.
 		const dropped = new Set([...hiddenTurns, ...snapshot.turns.filter((turn) => turn.rolledBack).map((turn) => turn.id)]);
-		const items = dropped.size > 0 ? timelineItems.map((item) => outlivingAction(item, dropped)) : timelineItems;
+		const kept = dropped.size > 0 ? timelineItems.map((item) => outlivingAction(item, dropped)) : timelineItems;
+		const items = atCarryingSteer(kept, snapshot.batchedDeliveries ?? [], batchedReports.moved);
 		const groups = groupByTurn({ ...snapshot, items }, { controllerStopped })
 			.filter((group) => !group.turnId || !hiddenTurns.has(group.turnId))
 			.map((group, index) => openingPending && (firstTurn ? group.turnId === firstTurn.id : index === 0 && group.turnId?.startsWith("local:"))
@@ -4124,7 +4154,7 @@ export function Timeline({
 		rangeExtractor: (range) => {
 			const indexes = defaultRangeExtractor(range);
 			// Keep an in-progress inline edit mounted while its row leaves view.
-			const editing = messageEdit ? groups.findIndex((group) => group.turnId === messageEdit.turnId) : -1;
+			const editing = groups.findIndex((group) => turnEditing(group, messageEdit));
 			if (editing >= 0 && !indexes.includes(editing)) indexes.push(editing);
 			if (pinned && !indexes.includes(groups.length - 1)) indexes.push(groups.length - 1);
 			return indexes.sort((a, b) => a - b);
@@ -4386,14 +4416,30 @@ export function Timeline({
 			reaim();
 			return;
 		}
-		if (viewportResize.current || !initialLayoutDone.current || performance.now() - initialLayoutAt.current < INITIAL_SNAP_MS) {
+		// The same goes for rows the reader did not watch arrive (a catch-up after they
+		// return, or anything landing while the window is hidden, where a glide would
+		// only start once they are back), and for the moments after the window is seen
+		// again while rows that landed hidden measure.
+		const now = performance.now();
+		const hidden = pageHidden();
+		const opening = !initialLayoutDone.current || now - initialLayoutAt.current < INITIAL_SNAP_MS;
+		if (viewportResize.current || opening || now - entranceGate.catchUpAt < INITIAL_SNAP_MS || hidden) {
+			if (!viewportResize.current && !opening && isFlying()) {
+				// The reader's own send or Jump to latest keeps on course to the new end;
+				// an automatic follow glide stops and lands. Hidden, neither could play.
+				if (!hidden && isGliding()) {
+					reaim();
+					return;
+				}
+				cancelScrollFollow();
+			}
 			if (viewportResize.current) cancelScrollFollow();
 			node.scrollTop = node.scrollHeight;
 			markWritten(node.scrollTop);
 			return;
 		}
 		followEnd();
-	}, [followEnd, markWritten, cancelScrollFollow, isFlying, reaim]);
+	}, [followEnd, markWritten, cancelScrollFollow, isFlying, isGliding, reaim]);
 
 	const syncScrollLayout = useCallback(() => {
 		anchorGeometry.current = null;
@@ -4589,7 +4635,8 @@ export function Timeline({
 		}
 		for (const row of liveRows) row.style.display = "";
 		updateScrollbar();
-		if (reducedMotionRef.current || typeof Element.prototype.animate !== "function") return;
+		// A hidden window would hold the slide until the reader returns, then play it.
+		if (reducedMotionRef.current || pageHidden() || typeof Element.prototype.animate !== "function") return;
 		rows.forEach((row, at) => {
 			// The row the hold keeps in place is measured on every re-place, so it must not move.
 			if (row === held || !row.isConnected || row.parentElement !== turn) return;
@@ -4621,6 +4668,31 @@ export function Timeline({
 	useEffect(() => {
 		syncScrollLayout();
 	}, [pinned, snapshot.latestSequence, groups.length, messageEdit?.turnId, syncScrollLayout]);
+	// The window is seen again: the reader starts watching from now. What landed
+	// while it was hidden is history, so a glide queued then (it cannot play without
+	// frames) is dropped, a reader at the end stays at the end, and the rows that
+	// landed hidden measure in place instead of being chased down the log.
+	// Read through a ref so streamed chunks (new layout callbacks) never re-register it.
+	const onPageShown = useRef(() => {});
+	onPageShown.current = () => {
+		entranceGate.watchingSince = Date.now();
+		entranceGate.catchUpAt = performance.now();
+		if (isFlying()) cancelScrollFollow();
+		const node = scroller.current;
+		if (!node || !initialLayoutDone.current) return;
+		if (pinnedRef.current) {
+			syncPromptSpacer();
+			followOrSnapToEnd(node);
+		}
+		updateScrollbar();
+	};
+	useEffect(() => {
+		const onVisibilityChange = () => {
+			if (!pageHidden()) onPageShown.current();
+		};
+		document.addEventListener("visibilitychange", onVisibilityChange);
+		return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+	}, []);
 	useLayoutEffect(() => {
 		restoreViewportResize();
 	}, [virtualHeight, restoreViewportResize]);
@@ -5596,7 +5668,9 @@ const TurnGroup = memo(function TurnGroup({
 			{outcome && showsWorked ? (
 				<motion.div
 					key="turn-worked-summary"
-					initial={{ opacity: 0 }}
+					// A turn that settled while the window was hidden is already settled
+					// when the reader returns; its fade would only start then.
+					initial={pageHidden() ? false : { opacity: 0 }}
 					animate={{ opacity: 1 }}
 					transition={{ duration: reducedMotion ? 0 : 0.24, ease: [0.22, 1, 0.36, 1] }}
 					data-turn-worked=""
@@ -6257,7 +6331,8 @@ function groupByTurn(snapshot: ConversationSnapshot, { controllerStopped = false
 	const groupForTurn = new Map<string, TimelineGroup>();
 
 	for (const item of snapshot.items) {
-		if (item.turnId === undefined) {
+		const turnId = carriedInto.get(item) ?? item.turnId;
+		if (turnId === undefined) {
 			// Consecutive turn-less items share one group rather than getting one each.
 			// A provider can run a turn AO never dispatched — a compaction, or a turn
 			// resumed inside the provider's own history — and every item it emits then
@@ -6278,20 +6353,20 @@ function groupByTurn(snapshot: ConversationSnapshot, { controllerStopped = false
 			});
 			continue;
 		}
-		const existing = groupForTurn.get(item.turnId);
+		const existing = groupForTurn.get(turnId);
 		if (existing) {
 			existing.items.push(item);
 			continue;
 		}
 		const group: TimelineGroup = {
 			// A turn opened by a keyed human message keeps the key its echo had.
-			key: itemKey(item) === item.id ? byTurn.get(item.turnId)?.groupKey ?? `${item.turnId}-${item.sequence}` : itemKey(item),
-			turnId: item.turnId,
+			key: itemKey(item) === item.id ? byTurn.get(turnId)?.groupKey ?? `${turnId}-${item.sequence}` : itemKey(item),
+			turnId,
 			// A turn that began above the loaded history sorts where it began.
-			anchor: byTurn.get(item.turnId)?.anchorSequence ?? item.sequence,
+			anchor: byTurn.get(turnId)?.anchorSequence ?? item.sequence,
 			items: [item],
 		};
-		groupForTurn.set(item.turnId, group);
+		groupForTurn.set(turnId, group);
 		groups.push(group);
 	}
 
@@ -6455,6 +6530,49 @@ function outlivingAction(item: ConversationItem, dropped: ReadonlySet<string>): 
 		detachedActions.set(item, detached);
 	}
 	return detached;
+}
+
+const carriedRows = new WeakMap<ConversationItem, ConversationItem>();
+const carriedInto = new WeakMap<ConversationItem, string>();
+
+function atCarryingSteer(items: ConversationItem[], deliveries: readonly BatchedDelivery[], moved: ReadonlySet<string>): ConversationItem[] {
+	if (deliveries.length === 0) return items;
+	const steers = new Map(items.flatMap((item) => (item.kind === "activity" && item.turnId && isSteer(item) ? [[item.id, item] as const] : [])));
+	const carriers = new Map(deliveries.flatMap((delivery) => {
+		const steer = delivery.steerActivityId ? steers.get(delivery.steerActivityId) : undefined;
+		return steer && !moved.has(delivery.turnId) ? [[delivery.turnId, steer] as const] : [];
+	}));
+	if (carriers.size === 0) return items;
+	const sentAt = (turnId: string) => {
+		const index = carriers.get(turnId)?.detail?.providerInputSourceTurnIds?.indexOf(turnId) ?? -1;
+		return index < 0 ? Number.MAX_SAFE_INTEGER : index;
+	};
+	const carried = items.filter((item) => item.turnId && carriers.has(item.turnId));
+	const blocks = new Map<ConversationItem, ConversationItem[]>();
+	for (const item of carried.sort((a, b) => sentAt(a.turnId!) - sentAt(b.turnId!) || a.sequence - b.sequence)) {
+		const steer = carriers.get(item.turnId!)!;
+		const block = blocks.get(steer);
+		if (block) block.push(item);
+		else blocks.set(steer, [item]);
+	}
+	const isCarried = new Set(carried);
+	const place = new Map([...blocks].flatMap(([steer, block]) => {
+		const next = items.reduce((min, item) => (!isCarried.has(item) && item.sequence > steer.sequence && item.sequence < min ? item.sequence : min), steer.sequence + 1);
+		return block.map((item, index) => [item, steer.sequence + ((next - steer.sequence) * (index + 1)) / (block.length + 1)] as const);
+	}));
+	return items
+		.map((item) => {
+			const steer = item.turnId ? carriers.get(item.turnId) : undefined;
+			const sequence = place.get(item);
+			if (!steer || sequence === undefined) return item;
+			const cached = carriedRows.get(item);
+			if (cached && carriedInto.get(cached) === steer.turnId && cached.sequence === sequence) return cached;
+			const row = { ...item, sequence };
+			carriedRows.set(item, row);
+			carriedInto.set(row, steer.turnId!);
+			return row;
+		})
+		.sort((a, b) => a.sequence - b.sequence);
 }
 
 /** Mirrors the items `TimelineItem` draws nothing for, so they cannot fill an empty accordion. */
