@@ -26,6 +26,7 @@ import { ArtifactThumbnail } from "../ArtifactThumbnail";
 import { splitTurnArtifacts, type TurnArtifact } from "../../lib/turn-artifacts";
 import type { ArtifactRow } from "../../lib/artifacts";
 import { useChatEntrance } from "./chat-entrance";
+import { pageHidden } from "../../lib/page-hidden";
 import { fetchActivityOutput } from "../../hooks/useConversation";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
@@ -379,7 +380,9 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 		const grew = message.text !== targetRef.current && message.text.startsWith(targetRef.current);
 		targetRef.current = message.text;
 		targetGraphemesRef.current = targetGraphemes;
-		if (reducedMotion) {
+		// A hidden window draws no frames, so a reveal would stall and replay once the
+		// reader is back. Show what arrived now; the fade treats it as settled too.
+		if (reducedMotion || pageHidden()) {
 			showWhole();
 			return;
 		}
@@ -1087,7 +1090,7 @@ export function HumanMessage({
 	// Hover-only actions float under the bubble instead of reserving a blank row;
 	// a branch navigator is always visible, so it keeps its place in the flow.
 	const inFlowActions = Boolean(branchPoint && onActivateBranch);
-	const actionRowClass = cn("flex h-7 items-center gap-1", inFlowActions ? "mt-1" : "absolute right-0 top-full z-10");
+	const actionRowClass = cn("flex h-7 items-center gap-1", inFlowActions ? "mt-1" : "absolute right-0 top-full z-10 mt-1");
 	// The editor's Cancel and Send float too, so starting an edit moves nothing. They
 	// sit on the "Worked for" line the turn reserves one row gap (10px) under the bubble.
 	const editActionRowClass = cn("flex h-7 items-center gap-1", inFlowActions ? "mt-1" : "absolute right-0 top-[calc(100%+0.625rem)] z-10");
@@ -1171,7 +1174,7 @@ export function HumanMessage({
 			)}
 			{editing ? null : (
 				<div className={actionRowClass}>
-					<div className="flex items-center gap-1 opacity-0 transition-opacity duration-150 ease-out focus-within:opacity-100 group-hover/message:opacity-100 motion-reduce:transition-none">
+					<div className="flex items-center gap-2 opacity-0 transition-opacity duration-150 ease-out focus-within:opacity-100 group-hover/message:opacity-100 motion-reduce:transition-none">
 						<MessageTimestamp createdAt={message.createdAt} />
 						{onEdit && onEditStart && message.turnId ? (
 							<Button
@@ -1676,6 +1679,8 @@ export function ActivityTransition({
 	useEffect(() => {
 		if (previousValue.current === value) return;
 		previousValue.current = value;
+		// A change made while the window is hidden would dip on the reader's return.
+		if (pageHidden()) return;
 		setSettling(true);
 	}, [value]);
 
