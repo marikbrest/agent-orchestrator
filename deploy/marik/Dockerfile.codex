@@ -1,0 +1,16 @@
+FROM golang:1.27.3-bookworm@sha256:b08bc99468058b6d8a0ada17fa54996b910d5e82a7e95bee0372e3bd98415258 AS download
+ARG TARGETARCH
+RUN set -eu; \
+    case "$TARGETARCH" in \
+      arm64) arch=arm64; triple=aarch64-unknown-linux-musl; integrity='w0ScAsBr9aZKtIFrh6HN6KU2yjKKeSCzYfbb7DB0Ccj4BYPzeZtUeQprbycLCwuX3AFQdbdjapmLho2iot74jQ==' ;; \
+      amd64) arch=x64; triple=x86_64-unknown-linux-musl; integrity='CxDm3+D1cpbGJeHrdzINoG+3wn9BVncP4qpZaaNYkxe8iPtRJOYyCJnnPoVjWRIBvI9vPKbRoifsMSA5xDaUpw==' ;; \
+      *) echo "Unsupported Codex architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://registry.npmjs.org/@openai/codex/-/codex-0.166.0-linux-$arch.tgz" -o /tmp/codex.tgz; \
+    test "$(openssl dgst -sha512 -binary /tmp/codex.tgz | base64 -w0)" = "$integrity"; \
+    mkdir /opt/codex; \
+    tar -xzf /tmp/codex.tgz -C /opt/codex --strip-components=3 "package/vendor/$triple"
+
+FROM marik-ao:local
+COPY --from=download /opt/codex /opt/codex
+ENV PATH="/opt/codex/bin:/opt/codex/codex-path:${PATH}"

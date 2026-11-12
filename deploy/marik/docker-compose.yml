@@ -1,0 +1,54 @@
+x-worker: &worker
+  image: ${MARIK_AO_IMAGE:-marik-ao:local}
+  build:
+    context: ../../backend
+    dockerfile: ../deploy/marik/Dockerfile
+  init: true
+  read_only: true
+  network_mode: none
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 256
+  mem_limit: 2g
+  cpus: 2
+  stop_grace_period: 30s
+  tmpfs:
+    - /tmp:rw,nosuid,nodev,size=256m,mode=1777
+  environment:
+    HOME: /home/worker
+    CODEX_HOME: /home/worker/.codex
+    AO_DATA_DIR: /home/worker/.ao
+    AO_PORT: "3001"
+    AO_TELEMETRY_REMOTE: "off"
+    AO_HARNESS_UPDATE_CHECKS: "off"
+  healthcheck:
+    test: ["CMD-SHELL", "ao status --json | grep -Eq '\"state\":[[:space:]]*\"ready\"'"]
+    interval: 5s
+    timeout: 4s
+    retries: 12
+services:
+  codex-a:
+    <<: *worker
+    volumes:
+      - codex-a-home:/home/worker
+      - codex-a-work:/workspace
+  codex-b:
+    <<: *worker
+    profiles: [fleet]
+    volumes:
+      - codex-b-home:/home/worker
+      - codex-b-work:/workspace
+  claude:
+    <<: *worker
+    profiles: [fleet]
+    volumes:
+      - claude-home:/home/worker
+      - claude-work:/workspace
+volumes:
+  codex-a-home:
+  codex-a-work:
+  codex-b-home:
+  codex-b-work:
+  claude-home:
+  claude-work:

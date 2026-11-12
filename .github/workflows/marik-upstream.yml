@@ -1,0 +1,27 @@
+name: Review upstream changes
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '27 6 * * 1'
+permissions:
+  contents: read
+jobs:
+  report:
+    if: github.repository == 'marikbrest/agent-orchestrator'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Summarize commits for a sync proposal
+        run: |
+          git fetch --no-tags https://github.com/OrchestratorInc/agent-orchestrator.git refs/heads/main
+          {
+            printf '### Upstream sync candidate\n\n'
+            printf 'Base: `%s`\n\nUpstream: `%s`\n\n' "$(git merge-base HEAD FETCH_HEAD)" "$(git rev-parse FETCH_HEAD)"
+            printf 'Commits since divergence: %s\n\n' "$(git rev-list --count HEAD..FETCH_HEAD)"
+            printf '[Review the upstream comparison](https://github.com/OrchestratorInc/agent-orchestrator/compare/%s...%s)\n' \
+              "$(git merge-base HEAD FETCH_HEAD)" "$(git rev-parse FETCH_HEAD)"
+          } >> "$GITHUB_STEP_SUMMARY"
