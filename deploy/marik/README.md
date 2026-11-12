@@ -40,6 +40,8 @@ deploy/marik/smoke.sh
 
 Use `--profile fleet` to enable the two additional daemons. Normal shutdown preserves volumes. The smoke script uses its own temporary project namespace and removes its test volumes. Use `--env-file deploy/marik/.env.example` if you want a separate namespace for manual testing.
 
+`MARIK_AO_IMAGE` selects an already-built image for an isolated smoke run. To use the local Ubuntu image, run `MARIK_AO_IMAGE=marik-ao:ubuntu-security bash deploy/marik/smoke.sh`. The default image tag remains available.
+
 The image uses digest-pinned base images. The Ubuntu 26.04 LTS runtime installs OS updates and packages from the Ubuntu repositories at build time. The lab mounts no host paths, publishes no ports, and disables networking, including provider egress. Each worker runs with UID 10001, an init process, a read-only root filesystem, dropped capabilities and bounded CPU, memory and PIDs.
 
 ## Account enrollment and Git
